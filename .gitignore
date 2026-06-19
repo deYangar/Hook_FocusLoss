@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller temporary files
+build/
+FocusHook.spec
+
+# Keep the portable executable, ignore other dist byproducts
+dist/*
+!dist/FocusHook.exe
+
+# Local reference clone used during development
+nofocusloss_ref/
+
+# Local compiler/toolchain; do not push
+mingw32/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
