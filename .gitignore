@@ -22,3 +22,4 @@ mingw32/
 Thumbs.db
 .vscode/
 .idea/
+download_mingw32.py
