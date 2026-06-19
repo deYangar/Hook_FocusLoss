@@ -11,6 +11,20 @@ Focus Hook 是一个 Windows 小工具，用于让部分单机游戏在失去前
 
 > 实现参考了 [NoFocusLoss](https://github.com/araghon007/nofocusloss) 的核心思路：替换目标窗口 WndProc，拦截失焦消息，并 Hook `GetForegroundWindow` / `SetCursorPos`。
 
+## 获取源码
+
+本项目使用 MinHook 作为 Git submodule。克隆源码时建议使用：
+
+```powershell
+git clone --recursive https://github.com/deYangar/Hook_FocusLoss.git
+```
+
+如果已经普通克隆，也可以在仓库目录执行：
+
+```powershell
+git submodule update --init --recursive
+```
+
 ## 快速使用
 
 ### 方式 A：直接运行便携版
@@ -118,7 +132,7 @@ dist/FocusHook.exe
 | `focus_hook_x64.dll` | 64 位 DLL |
 | `focus_hook_x86.dll` | 32 位 DLL |
 | `dist/FocusHook.exe` | 便携版 GUI |
-| `minhook/` | MinHook 源码依赖 |
+| `minhook/` | MinHook submodule，指向 `https://github.com/TsudaKageyu/minhook` |
 | `inject.py` | 旧版命令行注入器，保留用于调试 |
 | `compile.py` | DLL 编译辅助脚本 |
 
