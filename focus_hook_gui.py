@@ -304,10 +304,17 @@ def unload_dll(pid, dll_name):
             raise OSError(f"CreateRemoteThread(FreeLibrary) failed, err={ctypes.get_last_error()}")
 
         try:
-            WaitForSingleObject(h_thread, INFINITE)
+            # 10秒超时，不用 INFINITE 防止卡死
+            result = WaitForSingleObject(h_thread, 10000)
+            if result == 0x00000102:  # WAIT_TIMEOUT
+                raise OSError("FreeLibrary 超时 (10s)，DLL 可能被游戏锁定\n"
+                             "建议: 关闭游戏重启即可恢复默认焦点行为。")
             code = wintypes.DWORD(0)
-            if GetExitCodeThread(h_thread, ctypes.byref(code)) and code.value == 0:
-                raise OSError("FreeLibrary 返回失败，Hook 可能仍在目标进程中")
+            GetExitCodeThread(h_thread, ctypes.byref(code))
+            # FreeLibrary 返回非零=成功(引用计数减1), 返回0=失败
+            if code.value == 0:
+                raise OSError("FreeLibrary 返回 0，DLL 引用计数可能被游戏锁定\n"
+                             "建议: 关闭游戏重启即可恢复默认焦点行为。")
         finally:
             CloseHandle(h_thread)
         return True
@@ -347,7 +354,11 @@ class FocusHookApp:
         self.btn_inject = ttk.Button(top, text="Hook 开始", command=self.start_hook)
         self.btn_inject.pack(side="left", padx=(0, 8))
         self.btn_stop = ttk.Button(top, text="Hook 停止", command=self.stop_hook, state="disabled")
-        self.btn_stop.pack(side="left")
+        self.btn_stop.pack(side="left", padx=(0, 8))
+        self.btn_verify = ttk.Button(top, text="验证 Hook", command=self.verify_hook, state="disabled")
+        self.btn_verify.pack(side="left", padx=(0, 8))
+        self.btn_log = ttk.Button(top, text="打开调试日志", command=self.open_debug_log)
+        self.btn_log.pack(side="left")
 
         dll_frame = ttk.Frame(self.root, padding=(10, 0, 10, 8))
         dll_frame.pack(fill="x")
@@ -476,8 +487,11 @@ class FocusHookApp:
         self.hooking = False
         self.btn_inject.config(state="normal")
         self.btn_stop.config(state="normal")
+        self.btn_verify.config(state="normal")
         self.log("[OK] 注入完成。现在可以切出去测试游戏是否继续运行/出声/响应手柄。")
         self.status_var.set(f"已 Hook：[{w['exe']}] ({bits}位) {w['title']}")
+        # 自动验证一次
+        self.root.after(1500, lambda: self.verify_hook(silent=True))
 
     def on_hook_failed(self, err):
         self.hooking = False
@@ -511,13 +525,82 @@ class FocusHookApp:
         self.current_hook = None
         self.status_var.set(f"已恢复默认：[{hook['exe']}] {hook['title']}")
         self.btn_stop.config(state="disabled")
+        self.btn_verify.config(state="disabled")
         self.btn_inject.config(state="normal")
 
     def on_unhook_failed(self, err):
         self.log(f"[错误] 卸载失败：{err}")
-        self.status_var.set("卸载失败；如仍未恢复，请重启目标程序")
+        self.log("[提示] 游戏可能锁定了 DLL 引用计数，关闭游戏即可恢复默认行为。")
+        self.status_var.set("卸载失败 — 关闭游戏即可恢复")
         self.btn_stop.config(state="normal")
-        messagebox.showerror("卸载失败", err)
+        self.btn_verify.config(state="normal")
+        messagebox.showwarning("卸载失败", err + "\n\n这通常不影响使用，关闭游戏后自动恢复默认焦点行为。")
+
+    def verify_hook(self, silent=False):
+        """检查 DLL 是否真的加载在目标进程中，并读取调试日志。"""
+        hook = self.current_hook
+        if not hook:
+            if not silent:
+                messagebox.showinfo("验证", "当前没有已 Hook 的目标")
+            return
+
+        pid = hook["pid"]
+        dll_name = hook["dll_name"]
+        self.log(f"[*] 验证: 检查 PID {pid} 中 {dll_name} 是否已加载...")
+
+        try:
+            remote_mod = find_remote_module(pid, dll_name)
+        except Exception as e:
+            self.log(f"[错误] 验证失败: {e}")
+            if not silent:
+                messagebox.showerror("验证失败", str(e))
+            return
+
+        if remote_mod:
+            self.log(f"[OK] DLL 已加载, HMODULE=0x{remote_mod:X}")
+            # 读取调试日志
+            self._read_debug_log(silent=silent)
+        else:
+            self.log(f"[警告] DLL 未在目标进程中找到! 可能 LoadLibrary 失败或已被卸载")
+            if not silent:
+                messagebox.showwarning("验证结果", f"{dll_name} 未在 PID {pid} 中找到！\n\n可能原因:\n- LoadLibraryA 失败 (DLL 依赖缺失)\n- DLL 被目标进程卸载\n- 注入的是错误位数的 DLL")
+            # 即使 DLL 没加载，也读一下日志看看有没有记录
+            self._read_debug_log(silent=silent)
+
+    def _read_debug_log(self, silent=False):
+        """读取 %TEMP%/focus_hook_debug.log 的最后 30 行。"""
+        try:
+            temp_dir = os.environ.get("TEMP", os.environ.get("TMP", "."))
+            log_path = os.path.join(temp_dir, "focus_hook_debug.log")
+            if not os.path.exists(log_path):
+                self.log("[调试] 日志文件不存在 (DLL 可能未成功加载或未执行到日志代码)")
+                return
+
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            # 显示最后 30 行
+            tail = lines[-30:] if len(lines) > 30 else lines
+            self.log("[调试日志] (最后 30 行)")
+            self.log("─" * 50)
+            for line in tail:
+                self.log(line.rstrip())
+            self.log("─" * 50)
+            if len(lines) > 30:
+                self.log(f"(共 {len(lines)} 行, 仅显示最后 30 行)")
+        except Exception as e:
+            self.log(f"[调试] 读取日志失败: {e}")
+
+    def open_debug_log(self):
+        """用记事本打开调试日志文件。"""
+        temp_dir = os.environ.get("TEMP", os.environ.get("TMP", "."))
+        log_path = os.path.join(temp_dir, "focus_hook_debug.log")
+        if not os.path.exists(log_path):
+            messagebox.showinfo("调试日志", f"日志文件不存在:\n{log_path}\n\n请先执行 Hook 操作后再查看。")
+            return
+        try:
+            os.system(f'notepad "{log_path}"')
+        except Exception as e:
+            messagebox.showerror("打开失败", str(e))
 
     def run(self):
         self.root.mainloop()
